@@ -7,4 +7,4 @@ control the voting outcome.
 While the data used here are not granular enough to predict an individual's voting tendencies, they are useful
 for planning political activism at the county level. One application of this model: identify all counties
 that are incorrectly classed as Democratic by the decision tree; these should have a lot of attributes that would incline them to vote
-Democratic, and could be targeted for political activism. 
+Democratic, and could be targeted for political activism. Alernatively, such counties could be studied to see why they aren't voting Democratic.
