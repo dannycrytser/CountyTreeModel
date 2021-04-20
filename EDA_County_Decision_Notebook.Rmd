@@ -405,7 +405,7 @@ In our Shiny app, control parameters for this rpart call come from user input.
 tree_majority <- rpart(majority~.,
                        method = "class", 
                        data = na.omit(train),
-                       cp = 0.05)
+                       cp = 0.03)
 ```
 
 Now we can use the prp function to plot it. 
@@ -416,7 +416,7 @@ prp(tree_majority,
     main="Which way does a county vote?", 
     Margin = 0.05,
     border.col = "black",
-    split.cex = 0.7, 
+    split.cex = 0.5, 
     extra = 0)
 ```
 
@@ -437,3 +437,52 @@ test_pred <- predict(tree_majority, test, type = "class")
 
 ```
 
+
+Now lets use the caret package to produce a nice confusion matrix: 
+
+```{r}
+confusionMatrix(test_pred, test$majority
+                )
+```
+
+Our model has one drawback: when viewing the Democratic class as the "positive" result, the sensitivity (aka recall) of the tree model is only 74 percent. A quarter of all Democratic counties are incorrectly classified as Republican. On the other hand the specificity (aka precision) is 95%, so that only one in 20 Republican counties is incorrectly classified as Democratic. 
+
+The complexity parameter (cp) in the call to rpart controls how deep the tree is grown. 
+
+```{r}
+parameter_grid <- 0.0001*(1:5000)
+
+precision_recall_fn <- function(parameters, 
+                                dataset = train, 
+                                testdata = test, 
+                                testval = test$majority
+                                ){
+  precision_vec <- numeric(length(parameters))
+  recall_vec <- numeric(length(parameters))
+  
+  for(i in 1:length(parameters)){
+    new_model <- rpart(majority~.,
+                       method = "class", 
+                       data = na.omit(dataset),
+                       cp = parameters[i])
+    test_pred <- predict(new_model, testdata, type = "class")
+    new_matrix <- confusionMatrix(test_pred, testval
+                )
+    recall_vec[i] <- new_matrix$byClass[1]
+    precision_vec[i] <- new_matrix$byClass[2]
+  }
+  output <- list(precision_vec, recall_vec, parameters)
+}
+
+results <- precision_recall_fn(parameter_grid)
+```
+
+
+Now we can plot these 
+
+```{r}
+plot(xvec, rvec, main = "Recall vs. complexity", xlab = "Complexity", ylab = "Recall")
+plot(xvec, pvec, main = "Precision vs. complexity", xlab = "Complexity", ylab = "Precision")
+```
+
+It's not surprising that these would be somewhat in conflict with one another -- in vague terms low complexity models favor the majority (Republican counties) and high complexity models favor the minority (Democratic counties). It looks like our initial guess of cp = 0.03 is a very good complexity parameter was actually quite fortuitous. (Some rough experiments led to this choice, so it wasn't a complete shot in the dark.)
