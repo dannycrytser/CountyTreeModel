@@ -2,21 +2,35 @@
 title: "Exploratory Analysis: Presidential Voting by County"
 output: html_notebook
 ---
+
+
+# INTRODUCTION
+
+This notebook is an accompaniment to app.R, a Shiny app that generates decision tree models
+based on demographic and election data. Much of the code in this notebook is replicated
+in app.R, but I've included some exploratory data analysis and lengthier comments here.
+
+We're using data from a reasonably wide variety of sources, some local and some accessed through APIs. 
+
 # LOADING LIBRARIES
 
 ```{r}
-library(shiny)
+library(shiny) 
 library(tidyverse)
-library(RCurl)
+library(RCurl) 
 library(rpart)
 library(maps)
 library(mapproj)
+library(caret)
 library(rpart.plot)
 ```
 
 # LOADING DATA
 
-Get 2010 US census data (data on county-level racial composition):
+In this section we load all of the data we're using for this project into tidy tibbles. Eventually these will be joined together into one large tibble (called df) which will be narrowed down to a smaller tibble called main_df.
+
+
+Get 2010 US census data (data on county-level racial composition, as well as population). This comes from a local file that should be available in the data directory of the Github repository. 
 
 ```{r load_census}
 census_df <- readRDS("data/census.rds")
@@ -25,7 +39,9 @@ census_df <- census_df %>%
     rename(total_pop = total.pop)
 ```
 
-Get population density data (calculated by a Github user using census and wikipedia):
+Get population density data. This was calculated by Github user ykzeng using census data and Wikipedia.
+
+#TODO: Find more authoritative source for pop. density data.
 
 ```{r load_density}
 
@@ -34,7 +50,7 @@ density_df <- read_csv(density_url)
 
 ```
 
-Get USDA county-level education statistics (from the USDA)
+Get USDA county-level education statistics. (This is the first of a handful of county-level data sets hosted by the USDA at https://www.ers.usda.gov/data-products/county-level-data-sets/)
 
 ```{r load_educ}
 
@@ -43,7 +59,7 @@ educ_df <- read_csv(educ_url)
 
 ```
 
-Get poverty stats (from the USDA): 
+Get USDA poverty stats: 
 
 ```{r load_pov}
 
@@ -52,7 +68,7 @@ pov_df <- read_csv(pov_url)
 
 ```
 
-Get unemployment stats (from the USDA):
+Get USDA unemployment stats:
 
 ```{r load_unemp}
 
@@ -61,7 +77,7 @@ emp_df <- read_csv(emp_url)
 
 ```
 
-Get pop stats (also, from the USDA): 
+Get USDA pop stats: 
 
 ```{r load_pop}
 
@@ -70,9 +86,11 @@ pop_df <- read_csv(pop_url)
 
 ```
 
-The last data set we want is a .csv containing countywide election data
-we got this for a previous project and the code to generate it is 
-contained in the script munging.py.
+There is a problem here in the RESIDUAL_2010 column, but as we will not be using that column we ignore it.
+
+The last data set we want is a .csv containing countywide election data. This ultimately comes from the NYT, which has it in a somewhat complicated .json file on their Github repository. 
+
+We figured out how to get this for a previous project and the code to generate it is contained in the script munging.py. (We don't need to run the Python script for this project, but we include it for completeness sake.)
 
 ```{r load_pres}
 
@@ -80,30 +98,45 @@ vote_df <- read_csv('data/pres_race_2020.csv')
 
 ```
 
+
+
+# INSPECTING DATA
+
+It's good practice to take a look at the dimensions and rows/columns of all these dataframes to ensure that they were imported correctly. 
+
+(Omitting the calls to glimpse/view.)
+
+A few problems that stand out when glimpsing the data: 
+
+* Two of the USDA tables, emp_df and pov_df, are way too narrow. The tidy philosophy of data requires that different variables (such as the number of employed people and the number of unemployed people) should always occupy different columns. This table has too few columns, so that the "Value" column contains the values of many different variables. Fortunately we have just the necessary tools to "pivot out" these overly packed columns. 
+
+* The second one is also fairly minor. A 5-digit FIPS (Federal Information Processing Standard) code is assigned to every county-level political entity in the united states, including independent county-cities and the like. The first two digits of the code indicate the state and the last three indicate the county within the state. For some states the two-digit FIPS prefix begins with 0: for example, the FIPS prefix for counties in Alabama is 01. Thus the FIPS code should be recorded as a character string, not as a numeric value, which will typically shave off any superfluous leading 0's.
+
+Because the FIPS code uniquely identifies a county in all government records, it's the correct choice of key column for joining data frames together.
+
+Whoever prepared the data imported into emp_df, pov_df, pop_df, and density_df failed to take this into account, and we will have to "prepend" the FIPS fields for each of these tibbles with 0 (casting the values to character in the process). 
+
+Also two of the other tables (vote_df and educ_df) have different names for the FIPS, which we mutate using dplyr into "fips". 
+
+Note: after we join all the dataframes together, we only select a (relatively) small number of total columns from the huge composite tibble. This could have been avoided by selecting the columns earlier, and it's possible that in a setting where computational speed is essential, selecting first could have been preferable. 
+
 # WRANGLING DATA
 
-There are a few changes we have to make to the data sets before we can join them.
+In this section we carry out all the changes indicated in the "Inspecting Data" section. 
 
-First, we need to widen the emp_df and pov_df tables. We do this with tidyr's pivot_wider
-function.
+Widen the emp_df and pov_df tables:
 
 ```{r pivots}
-
 pov_df <- pov_df %>%
     pivot_wider(names_from = Attribute,
                 values_from = Value) 
-
 emp_df <- emp_df %>%
     pivot_wider(names_from = Attribute,
                 values_from = Value)
-
 ```
 
-The census_df is missing a FIPS column, and instead it has a name column we can repair this by joining it to another table that contains both name and FIPS
 
-Glimpsing the dataframes we've loaded so far, we see that the employment, population, and poverty dataframes have poorly formatted FIPStxt columns (in fact they are recorded as double values when they should be character strings)
-
-As the FIPS is the joining key we need it to be in a standard format. The following is used 
+Create zero_prepending function to apply to incorrectly coded FIPS:
 
 ```{r prepend_zero}
 prepend_zero <- function(number_value){
@@ -117,7 +150,7 @@ prepend_zero <- Vectorize(prepend_zero)
 ```
 
 
-Now we can actually go through and fix the FIPStxt columns in emp_df, pop_df, and pov_df. While we do this we add in duplicates of the (valid) FIPS columns in the other two data sets
+Prepend zeros (also mutate nonstandard FIPS column names)
 
 ```{r fips_mutates}
 
@@ -141,7 +174,7 @@ educ_df <- educ_df %>%
 
 ```
 
-Add in dem_pct and gop_pct to the vote_df
+Unmentioned in previous section but we also add in dem_pct and gop_pct to the vote_df
 
 ```{r pol_pcts}
 
@@ -153,9 +186,8 @@ vote_df <- vote_df %>%
 
 ```
 
-Add in categorical variable (did the county vote Dem/GOP in 2020 Pres) to vote_df
+Add in categorical variable (did the county vote Dem/GOP in 2020 Pres) to vote_df.
 
-Probably unnecessarily we write a little function to make the call to mutate a bit simpler.
 
 ```{r majority_vote}
 
@@ -172,7 +204,7 @@ majority_vote <- Vectorize(majority_vote)
 
 (Whenever you're using a function in mutate, don't forget to vectorize!)
 
-Now we create the majority vote categorical var
+Create majority vote.
 
 ```{r majority_vote_mutate}
 
@@ -183,9 +215,7 @@ vote_df$majority <- as.factor(vote_df$majority)
 
 ```
 
-We also include a state-level majority to decide how many states we classify incorrectly
-
-
+We also include a state-level majority to decide how many states we classify incorrectly.
 
 ```{r state_majorities}
 
@@ -206,9 +236,7 @@ vote_df <- vote_df %>%
 
 # JOINING + SELECTING DATA
 
-Combine the dataframes together
-
-The order matters, because the helper function we're using is designed to be applied mainly to census_df, so we want to make sure the counties come out in the order specified by census_df. 
+The order matters, because the helper function we will use to create maps was tailored to the table in census_df, so we want to make sure the counties come out in the order specified by census_df. 
 
 ```{r main_join}
 
@@ -236,54 +264,52 @@ influence the election outcome of a county.
 
 * From density_df we'll just take:
 
- + Population density (ppl/sq mi.) which is labeled as POP060210
+  + Population density (ppl/sq mi.) which is labeled as POP060210
 
 * From educ_df we will take the (fairly self-explanatory) variables: 
 
- + Percent of adults with less than a high school diploma, 2015-19
- + Percent of adults with a high school diploma only, 2015-19
- + Percent of adults completing some college or associate's degree, 2015-19
- + Percent of adults with a bachelor's degree or higher, 2015-19
+  + Percent of adults with less than a high school diploma, 2015-19
+  + Percent of adults with a high school diploma only, 2015-19
+  + Percent of adults completing some college or associate's degree, 2015-19
+  + Percent of adults with a bachelor's degree or higher, 2015-19
 
-# From emp_df we will take the variables 
+* From emp_df we will take the variables 
 
-# Unemployment_rate_2019
-# Median_Household_Income_2019
-# Med_HH_Income_Percent_of_State_Total_2019
-# Rural_urban_continuum_code_2013
-# Urban_influence_code_2013  
-# Metro_2013
+  + Unemployment_rate_2019
+  + Median_Household_Income_2019
+  + Med_HH_Income_Percent_of_State_Total_2019
+  + Rural_urban_continuum_code_2013
+  + Urban_influence_code_2013  
+  + Metro_2013
 
-# The first three of these are self-explanatory ('HH'=Household)
+  + The first three of these are fairly self-explanatory ('HH'=Household).
 
-# The last three are ordinal variables that describe how rural/urban
-# a county is. 
+  + The last three are ordinal variables that describe how rural/urban a county is. 
 
-# The documentation for these is available for download along with the data sets
-# at https://www.ers.usda.gov/data-products/county-level-data-sets/download-data/
+  + The documentation for these is available for download along with the data sets at https://www.ers.usda.gov/data-products/county-level-data-sets/download-data/
 
-# For example, the Urban Influence code assigns values on a 1-12 scale
+  + For example, the Urban Influence code assigns values on a 1-12 scale
 		
-# 1	In large metro area of 1+ million residents			
-# 2	In small metro area of less than 1 million residents			
-# ...		
-# 11	Noncore not adjacent to metro or micro area and contains a town of at least 2,500 residents			
-# 12	Noncore not adjacent to metro or micro area and does not contain a town of at least 2,500 residents			
+  + * 1	In large metro area of 1+ million residents			
+    * 2	In small metro area of less than 1 million     residents			
+    * 11	Noncore not adjacent to metro or micro area and contains a town of at least 2,500 residents			
+    * 12	Noncore not adjacent to metro or micro area and does not contain a town of at least 2,500 residents			
 
-# The population statistics dataset is particularly big, 166 variables
+* The population statistics dataset is particularly large, 166 variables. We only take: 
 
-# Choosing the following: 
+  + POP_ESTIMATE_2019
+  + N_POP_CHG_2019 (population change in the year 2019)
+  + R_NATURAL_INC_2019 (natural increase = birth rate-death rate)
+  + INTERNATIONAL_MIG_2019 (international migration to this FIPS)
 
-# POP_ESTIMATE_2019
-# N_POP_CHG_2019 (population change in the year 2019)
-# R_NATURAL_INC_2019 (natural increase = birth rate-death rate)
-# INTERNATIONAL_MIG_2019 (international migration to this FIPS)
+* The povery dataset has only 34 variables, we'll take: 
 
-# The povery dataset has only 34 variables, we'll take
-# PCTPOVALL_2019 (pct of population in poverty in 2019)
-# POV017_2019	Estimate of people age 0-17 in poverty 2019
+  + PCTPOVALL_2019 (pct of population in poverty in 2019)
+  + POV017_2019	Estimate of people age 0-17 in poverty 2019
 
-# The vote dataset only contributes the variable majority
+* The vote dataset only contributes the variable majority.
+
+```{r remedy001}
 
 good_columns <- c( 
                   "fips",
@@ -314,6 +340,12 @@ good_columns <- c(
 main_df <- df %>%
     select(all_of(good_columns))
 
+```
+
+Rename a bunch of columns
+
+```{r rename_cols}
+
 main_df <- main_df %>%
     rename("no_high_sch" = "Percent of adults with less than a high school diploma, 2015-19",
            "high_sch%" = "Percent of adults with a high school diploma only, 2015-19",
@@ -334,62 +366,74 @@ main_df <- main_df %>%
            "ppl_per_sq_mi" = "POP060210"
            )
 
-
-# ---- CALIBRATING DECISION TREES ----
-
-# we need to split main_df into a training set and a test set
+```
 
 
-# create ids 
+# CALIBRATING DECISION TREES
+
+As always we need to split main_df into a training set and a test set.
+
+One way to do this is to create an id column that we can use an antijoin on. 
+
+```{r id_col}
 
 main_df <- main_df %>% 
     mutate(id = row_number())
-# check the ids 
-head(main_df$id)
 
-# make a training set
+```
+
+
+Optionally, we can check the ids 
+<!-- head(main_df$id) -->
+
+Make training/test sets.
+```{r train_test_split}
+main_df <- main_df[ , !(colnames(main_df) == "fips")]
 train <- main_df %>% sample_frac(.70)
-
-# make a test set
 test  <- anti_join(main_df, train, by = 'id')
+```
 
-# R's decision tree library complains a lot if there is a lot of missing data 
-# We take the lazy route and just omit the data if something is missing
+R's decision tree library complains a lot if there is a lot of missing data. We take the lazy, suboptimal route and just omit the data if something is missing.
+We want to predict outcome (i.e. majority party) with the freedom to use every variable except for fips (too specific). 
 
-# we want to predict outcome (majority) with the freedom
-# to use every variable except for fips (too specific)
+We use the rpart function instead of tree (better plotting, flexibility, etc.). 
+In our Shiny app, control parameters for this rpart call come from user input. 
 
-# train tree
-tree_majority <- rpart(majority~.-fips,
+```{r tree_train}
+
+
+tree_majority <- rpart(majority~.,
                        method = "class", 
-                       data = na.omit(main_df),
-                       cp = 0.001)
+                       data = na.omit(train),
+                       cp = 0.05)
+```
 
+Now we can use the prp function to plot it. 
 
-# plot tree
+```{r plot_tree}
 prp(tree_majority, 
     uniform=TRUE,
     main="Which way does a county vote?", 
-    Margin = 0.1,
+    Margin = 0.05,
     border.col = "black",
     split.cex = 0.7, 
     extra = 0)
+```
 
-# create attractive png of tree
+The following exports a nice .png of the decision tree model. 
+
+```{r export_graphic}
 post(tree_majority, file = "decision_tree.png",
      title = "CountyVotingTree")
+```
 
-# if we view the summary, we see the variables used are:
 
-# college_or_more, white, black, total_pop, intl_migration, med_hh_income_pct_state
+If we view the summary (call summary(tree_majority)) or look at we see the variables used are college_or_more (this is the % of the county population that finished college/university), intl_immigration, as well as white and black population percentages. 
 
-# Our current training accuracy is 0.92281, pretty good. 
 
-# this generates the test predictions
+```{r remedy002}
 
-tree_pred <- predict(tree_majority, test, type = "class")
+test_pred <- predict(tree_majority, test, type = "class")
 
-table(tree_pred, test$majority)
-
-# the test accuracy is 0.8843683, barely less than the training accuracy
+```
 
