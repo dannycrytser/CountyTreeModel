@@ -391,6 +391,8 @@ Make training/test sets.
 main_df <- main_df[ , !(colnames(main_df) == "fips")]
 train <- main_df %>% sample_frac(.70)
 test  <- anti_join(main_df, train, by = 'id')
+train <- train[, !(colnames(train) == "id")]
+train <- test[, !(colnames(train) == "id")]
 ```
 
 R's decision tree library complains a lot if there is a lot of missing data. We take the lazy, suboptimal route and just omit the data if something is missing.
@@ -405,7 +407,7 @@ In our Shiny app, control parameters for this rpart call come from user input.
 tree_majority <- rpart(majority~.,
                        method = "class", 
                        data = na.omit(train),
-                       cp = 0.03)
+                       cp = 0.003)
 ```
 
 Now we can use the prp function to plot it. 
@@ -419,6 +421,12 @@ prp(tree_majority,
     split.cex = 0.5, 
     extra = 0)
 ```
+
+
+Interpreting the decision tree is fairly easy: the first and most important question when deciding how a county will vote is the percentage of residents who have a college degree (or more). The counties in which at least 32 percent of residents have a college degree are very likely to vote Democratic. However, such a county can still vote Republican if it has relatively few Asian residents and is populated by high earners (the county's median household income is 121 percent of the state median).
+
+On the other hand, a county with few (< 32 percent) of residents having college degrees can vote Democratic as long as POC make up a substantial majority of the population (white < 42 percent). 
+None of these ideas are tremendously surprising, especially for anyone who followed post-election demographic analysis published newspapers and other media after the 2020 election. If we reduce the complexity parameter (cp) in the call to rpart, we can generate far more complicated trees, with several dozen nodes. These will outperform our somewhat modestly sized tree on the training set, but they will suffer from heavy overfitting and their test accuracy will be worse. They will also offer somewhat more interesting conclusions about the variables, involving some of the variables (like poverty rates, population density, )
 
 The following exports a nice .png of the decision tree model. 
 
